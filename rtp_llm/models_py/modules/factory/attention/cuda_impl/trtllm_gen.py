@@ -580,6 +580,11 @@ class FlashInferTRTLLMPrefillImpl(FMHAImplBase):
     def support(
         cls, attn_configs: AttentionConfigs, attn_inputs: PyAttentionInputs
     ) -> bool:
+        if (
+            attn_configs.v_size_per_head
+            and attn_configs.v_size_per_head != attn_configs.size_per_head
+        ) or attn_configs.sliding_window > 0 or attn_configs.add_sink_bias:
+            return False
         fmha_impl = FlashInferTRTLLMPrefillOp(attn_configs)
         return fmha_impl.support(attn_inputs)
 
@@ -644,7 +649,11 @@ class FlashInferTRTLLMSpecDecodeImpl(FMHAImplBase):
     def support(
         cls, attn_configs: AttentionConfigs, attn_inputs: PyAttentionInputs
     ) -> bool:
-        if attn_configs.use_mla:
+        if (
+            attn_configs.use_mla
+            or attn_configs.sliding_window > 0
+            or attn_configs.add_sink_bias
+        ):
             return False
         fmha_impl = FlashInferTRTLLMDecodeOp(attn_configs)
         return fmha_impl.support(attn_inputs)
@@ -720,7 +729,15 @@ class FlashInferTRTLLMDecodeImpl(FMHAImplBase):
     def support(
         cls, attn_configs: AttentionConfigs, attn_inputs: PyAttentionInputs
     ) -> bool:
-        if attn_configs.use_mla:
+        if (
+            attn_configs.use_mla
+            or (
+                attn_configs.v_size_per_head
+                and attn_configs.v_size_per_head != attn_configs.size_per_head
+            )
+            or attn_configs.sliding_window > 0
+            or attn_configs.add_sink_bias
+        ):
             return False
         fmha_impl = FlashInferTRTLLMDecodeOp(attn_configs)
         return fmha_impl.support(attn_inputs)

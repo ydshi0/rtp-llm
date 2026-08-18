@@ -101,6 +101,9 @@ class AttentionConfigs:
     rope_config: RopeConfig
     rope_head_dim: int
     size_per_head: int
+    v_size_per_head: int
+    sliding_window: int
+    add_sink_bias: bool
     softmax_extra_scale: float
     tokens_per_block: int
     kernel_tokens_per_block: int
@@ -995,6 +998,9 @@ class KVCacheSpecDesc:
     cache_type: KVCacheSpecType
     dtype: DataType
     is_state_cache: bool
+    mha_kv_head_num: int
+    mha_k_head_dim: int
+    mha_v_head_dim: int
     entry_elems: int
     entry_dtype: DataType
     entry_count_mode: OpaqueBlockEntryCountMode

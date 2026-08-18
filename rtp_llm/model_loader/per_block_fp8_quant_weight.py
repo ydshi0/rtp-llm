@@ -27,6 +27,7 @@ from rtp_llm.utils.model_weight import (
     convert_down_proj_,
     convert_gate_up_proj_,
     identity,
+    is_mimo_v25_weight,
     merge_block_scale,
     merge_te_qkv,
     mla_pad,
@@ -249,7 +250,9 @@ class PerBlockFp8Weight(CompositeWeight, QuantWeight):
         ):
             return False
         name = src_weight_info.name
-        return name in cls.w8a8_weight_list
+        return name in cls.w8a8_weight_list and not is_mimo_v25_weight(
+            src_weight_info
+        )
 
     def __init__(
         self,

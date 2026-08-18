@@ -117,6 +117,26 @@ TEST(KVCacheLayoutViewTest, MhaUsesGroupHeadsAndSpecPayloadForKernelView) {
     EXPECT_EQ(cache.getKernelSeqSizePerBlock("full"), 2);
 }
 
+TEST(KVCacheLayoutViewTest, MhaExposesSeparateViewsForAsymmetricKeyAndValueDimensions) {
+    const auto base = torch::arange(2 * 80, torch::TensorOptions().dtype(torch::kFloat16)).reshape({2, 80});
+    auto       group = makeGroup("mimo",
+                           KVCacheSpecType::MultiHeadAttention,
+                           CacheGroupType::FULL,
+                           /*physical_seq_size=*/4,
+                           /*kernel_seq_size=*/2,
+                           /*k_elems=*/48,
+                           /*v_elems=*/32,
+                           /*local_kv_heads=*/1);
+    torch_ext::KVCache cache(makeLayout({std::move(group)}, {"mimo"}, {{base, {}}}));
+
+    const auto layer = cache.getLayerCache(0);
+    EXPECT_EQ(layer.kv_cache_base.sizes().vec(), base.sizes().vec());
+    EXPECT_EQ(layer.k_cache.sizes().vec(), (std::vector<int64_t>{4, 1, 2, 12}));
+    EXPECT_EQ(layer.v_cache.sizes().vec(), (std::vector<int64_t>{4, 1, 2, 8}));
+    EXPECT_EQ(layer.k_cache.data_ptr(), base.data_ptr());
+    EXPECT_EQ(layer.v_cache.data_ptr<at::Half>(), base.data_ptr<at::Half>() + 48);
+}
+
 TEST(KVCacheLayoutViewTest, MlaReshapesKvAndScaleWithoutChangingStorage) {
     const auto base =
         torch::arange(2 * 8 * 6, torch::TensorOptions().dtype(torch::kFloat32)).to(torch::kBFloat16).reshape({2, 8, 6});
@@ -138,7 +158,7 @@ TEST(KVCacheLayoutViewTest, MlaReshapesKvAndScaleWithoutChangingStorage) {
     EXPECT_EQ(layer.kv_scale_base.data_ptr(), scale.data_ptr());
 }
 
-TEST(KVCacheLayoutViewTest, FullOpaqueExpandsButLinearSwaAndStateStayPhysical) {
+TEST(KVCacheLayoutViewTest, FullOpaqueAndSwaMhaExpandButLinearAndStateStayPhysical) {
     const auto opaque       = torch::arange(3 * 64, torch::TensorOptions().dtype(torch::kUInt8)).reshape({3, 64});
     auto       opaque_group = makeGroup("opaque", KVCacheSpecType::OpaqueKV, CacheGroupType::FULL, 512, 128, 64, 0);
     torch_ext::KVCache opaque_cache(makeLayout({std::move(opaque_group)}, {"opaque"}, {{opaque, {}}}));
@@ -147,9 +167,14 @@ TEST(KVCacheLayoutViewTest, FullOpaqueExpandsButLinearSwaAndStateStayPhysical) {
     EXPECT_EQ(opaque_layer.kv_cache_base.sizes().vec(), (std::vector<int64_t>{12, 16}));
 
     const auto physical = torch::arange(3 * 64, torch::TensorOptions().dtype(torch::kFloat16)).reshape({3, 64});
+    auto               swa_group = makeGroup("swa", KVCacheSpecType::MultiHeadAttention, CacheGroupType::SWA, 8, 2, 32, 32);
+    torch_ext::KVCache swa_cache(makeLayout({std::move(swa_group)}, {"swa"}, {{physical, {}}}));
+    const auto         swa_layer = swa_cache.getLayerCache(0);
+    EXPECT_EQ(swa_layer.seq_size_per_block, 2);
+    EXPECT_EQ(swa_layer.kv_cache_base.sizes().vec(), (std::vector<int64_t>{12, 2, 1, 2, 4}));
+
     for (const auto& [tag, spec_type, policy] : std::vector<std::tuple<std::string, KVCacheSpecType, CacheGroupType>>{
              {"linear", KVCacheSpecType::LinearAttention, CacheGroupType::LINEAR},
-             {"swa", KVCacheSpecType::MultiHeadAttention, CacheGroupType::SWA},
              {"state", KVCacheSpecType::OpaqueState, CacheGroupType::FULL}}) {
         auto               group = makeGroup(tag, spec_type, policy, 8, 2, 32, 32);
         torch_ext::KVCache cache(makeLayout({std::move(group)}, {tag}, {{physical, {}}}));

@@ -45,12 +45,17 @@ struct MHAKVCacheSpec: public KVCacheSpec {
 
         const auto     attn_tp        = std::max<int64_t>(1, ctx.parallelism_config->get_attn_tp_size());
         const uint32_t tp             = static_cast<uint32_t>(attn_tp);
-        const uint32_t kv             = static_cast<uint32_t>(attn.kv_head_num);
+        const uint32_t kv             = desc.mha_kv_head_num > 0 ? desc.mha_kv_head_num : static_cast<uint32_t>(attn.kv_head_num);
         const uint32_t local_kv_heads = (kv % tp == 0) ? kv / tp : kv / std::gcd(kv, tp);
+        const size_t   k_head_dim     = desc.mha_k_head_dim > 0 ? desc.mha_k_head_dim : attn.size_per_head;
+        const size_t   v_head_dim     = desc.mha_v_head_dim > 0 ? desc.mha_v_head_dim :
+                                                                      (attn.v_size_per_head > 0 ? attn.v_size_per_head : attn.size_per_head);
 
-        spec->per_token_k_elems       = static_cast<size_t>(local_kv_heads) * attn.size_per_head;
+        spec->per_token_k_elems       = static_cast<size_t>(local_kv_heads) * k_head_dim;
+        spec->per_token_v_elems       = static_cast<size_t>(local_kv_heads) * v_head_dim;
         if (spec->dtype_ == DataType::TYPE_INT8 || spec->dtype_ == DataType::TYPE_FP8_E4M3) {
             spec->per_token_k_scale_bytes = static_cast<size_t>(local_kv_heads) * sizeof(float);
+            spec->per_token_v_scale_bytes = static_cast<size_t>(local_kv_heads) * sizeof(float);
         }
         return spec;
     }
@@ -64,7 +69,7 @@ struct MHAKVCacheSpec: public KVCacheSpec {
     }
 
     size_t v_block_size() const override {
-        return per_token_k_elems * seq_size_per_block;
+        return per_token_v_elems * seq_size_per_block;
     }
 
     size_t block_size_bytes() const override {
@@ -88,7 +93,7 @@ struct MHAKVCacheSpec: public KVCacheSpec {
     }
 
     size_t v_scale_block_size_bytes() const override {
-        return per_token_k_scale_bytes * seq_size_per_block;
+        return per_token_v_scale_bytes * seq_size_per_block;
     }
 
     rtp_llm::DataType memoryLayoutDType() const override {
@@ -111,7 +116,9 @@ private:
     DataType dtype_ = DataType::TYPE_INVALID;
 
     size_t per_token_k_elems       = 0;
+    size_t per_token_v_elems       = 0;
     size_t per_token_k_scale_bytes = 0;
+    size_t per_token_v_scale_bytes = 0;
 };
 
 }  // namespace rtp_llm

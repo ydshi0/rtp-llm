@@ -83,6 +83,8 @@ class XQAImpl(FMHAImplBase):
     def support(
         cls, attn_configs: AttentionConfigs, attn_inputs: PyAttentionInputs
     ) -> bool:
+        if attn_configs.sliding_window > 0 or attn_configs.add_sink_bias:
+            return False
         # XQA cubin covers sm_90 only; sm_120a (Blackwell consumer, e.g.
         # RTX 5000 Pro) lacks a binding and triggers cudaErrorInvalidSymbol
         # at first forward. C++ XQAAttnOp.support gate is `>= kSM_90` and
@@ -175,6 +177,8 @@ class XQADecodeImpl(FMHAImplBase):
     def support(
         cls, attn_configs: AttentionConfigs, attn_inputs: PyAttentionInputs
     ) -> bool:
+        if attn_configs.sliding_window > 0 or attn_configs.add_sink_bias:
+            return False
         if attn_inputs.is_prefill:
             return False
         # sm_120a consumer Blackwell: the FlashInfer xqa() build here rejects

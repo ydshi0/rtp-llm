@@ -10,6 +10,7 @@ from rtp_llm.utils.model_weight import CkptWeightInfo, identity, W
 class AttnConfig(BaseModel):
     hidden_size: int = -1
     size_per_head: int = -1
+    v_size_per_head: int = -1
     head_num: int = -1
     head_num_kv: int = -1
     need_post_ln: bool = False

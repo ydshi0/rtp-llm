@@ -41,6 +41,12 @@ def _supports_trtllm_fmha_v2(attn_configs: AttentionConfigs) -> bool:
         or attn_configs.head_num <= 0
         or attn_configs.kv_head_num <= 0
         or attn_configs.head_num % attn_configs.kv_head_num != 0
+        or (
+            attn_configs.v_size_per_head
+            and attn_configs.v_size_per_head != attn_configs.size_per_head
+        )
+        or attn_configs.sliding_window > 0
+        or attn_configs.add_sink_bias
     ):
         return False
 

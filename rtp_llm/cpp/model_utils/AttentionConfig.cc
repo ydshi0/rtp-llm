@@ -20,6 +20,9 @@ std::string AttentionConfigs::DebugAttentionConfigStr() const {
     oss << "  head_num: " << head_num << std::endl;
     oss << "  kv_head_num: " << kv_head_num << std::endl;
     oss << "  size_per_head: " << size_per_head << std::endl;
+    oss << "  v_size_per_head: " << v_size_per_head << std::endl;
+    oss << "  sliding_window: " << sliding_window << std::endl;
+    oss << "  add_sink_bias: " << add_sink_bias << std::endl;
     oss << "  tokens_per_block: " << tokens_per_block << std::endl;
     oss << "  is_causal: " << is_causal << std::endl;
     oss << "  q_scaling: " << q_scaling << std::endl;

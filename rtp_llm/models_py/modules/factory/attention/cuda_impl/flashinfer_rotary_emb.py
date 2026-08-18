@@ -41,6 +41,7 @@ class MhaRotaryEmbeddingOp(BaseRotaryEmbeddingOp):
         )
         self.num_heads = attn_config.head_num
         self.num_kv_heads = attn_config.kv_head_num
+        self.v_head_size = attn_config.v_size_per_head or self.head_size
         self.seq_size_per_block = attn_config.kernel_tokens_per_block
         self.params = None
 
@@ -74,14 +75,14 @@ class MhaRotaryEmbeddingOp(BaseRotaryEmbeddingOp):
             [
                 self.head_size * self.num_heads,
                 self.head_size * self.num_kv_heads,
-                self.head_size * self.num_kv_heads,
+                self.v_head_size * self.num_kv_heads,
             ],
             dim=-1,
         )
         # Reshape to [total_tokens, num_heads, head_dim]
         query = q.reshape(q.shape[0], self.num_heads, self.head_size)
         key = k.reshape(k.shape[0], self.num_kv_heads, self.head_size)
-        value = v.reshape(v.shape[0], self.num_kv_heads, self.head_size)
+        value = v.reshape(v.shape[0], self.num_kv_heads, self.v_head_size)
 
         # Apply RoPE to Q and K
         self._apply_rope(query, key, self.params)

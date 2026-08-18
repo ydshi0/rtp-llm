@@ -51,12 +51,16 @@ class KVCacheWriteOp:
         if kv_cache is not None:
             # For real execution - use provided KV cache
             # KV cache has shape [num_pages, 2, num_kv_heads, page_size, head_dim] (HND layout)
-            k_cache = kv_cache.kv_cache_base[
-                :, 0, :, :, :
-            ]  # [num_pages, num_kv_heads, page_size, head_dim]
-            v_cache = kv_cache.kv_cache_base[
-                :, 1, :, :, :
-            ]  # [num_pages, num_kv_heads, page_size, head_dim]
+            if kv_cache.k_cache is not None and kv_cache.k_cache.numel() > 0:
+                k_cache = kv_cache.k_cache
+                v_cache = kv_cache.v_cache
+            else:
+                k_cache = kv_cache.kv_cache_base[
+                    :, 0, :, :, :
+                ]  # [num_pages, num_kv_heads, page_size, head_dim]
+                v_cache = kv_cache.kv_cache_base[
+                    :, 1, :, :, :
+                ]  # [num_pages, num_kv_heads, page_size, head_dim]
             if key.dtype != k_cache.dtype:
                 raise ValueError(
                     f"key dtype {key.dtype} must match K cache dtype {k_cache.dtype}"
@@ -73,17 +77,28 @@ class KVCacheWriteOp:
             positions = self.params.positions_d.narrow(0, 0, nnz)
 
             # Append K and V to paged cache using HND layout
-            page.append_paged_kv_cache(  # type: ignore
-                key,  # append_key: [total_tokens, num_kv_heads, head_dim]
-                value,  # append_value: [total_tokens, num_kv_heads, head_dim]
-                batch_indices,
-                positions,
-                (k_cache, v_cache),  # paged_kv_cache: tuple of K and V caches
-                self.params.page_indice_d,
-                self.params.decode_page_indptr_d,
-                self.params.paged_kv_last_page_len_d,
-                "HND",  # kv_layout: HND layout (num_pages, num_kv_heads, page_size, head_dim)
-            )
+            if k_cache.size(-1) != v_cache.size(-1):
+                page_size = k_cache.size(2)
+                logical_page = positions.long() // page_size
+                slot = positions.long() % page_size
+                physical_page = self.params.page_indice_d[
+                    self.params.decode_page_indptr_d[batch_indices.long()].long()
+                    + logical_page
+                ].long()
+                k_cache[physical_page, :, slot, :] = key
+                v_cache[physical_page, :, slot, :] = value
+            else:
+                page.append_paged_kv_cache(  # type: ignore
+                    key,
+                    value,
+                    batch_indices,
+                    positions,
+                    (k_cache, v_cache),
+                    self.params.page_indice_d,
+                    self.params.decode_page_indptr_d,
+                    self.params.paged_kv_last_page_len_d,
+                    "HND",
+                )
         else:
             # For warmup/JIT compilation - create dummy KV cache
             (
@@ -101,7 +116,7 @@ class KVCacheWriteOp:
                     max_num_pages,
                     self.num_kv_heads,
                     self.token_per_block,
-                    self.head_size,
+                    value.size(-1),
                 ),
                 dtype=value.dtype,
                 device=value.device,
@@ -118,17 +133,26 @@ class KVCacheWriteOp:
             )
 
             # Append K and V to paged cache using HND layout
-            page.append_paged_kv_cache(  # type: ignore
-                key,
-                value,
-                batch_indices,
-                positions,
-                (k_cache, v_cache),  # paged_kv_cache: tuple of K and V caches
-                kv_page_indices,
-                kv_page_indptr,
-                kv_last_page_len,
-                "HND",  # kv_layout: HND layout (num_pages, num_kv_heads, page_size, head_dim)
-            )
+            if k_cache.size(-1) != v_cache.size(-1):
+                logical_page = positions.long() // self.token_per_block
+                slot = positions.long() % self.token_per_block
+                physical_page = kv_page_indices[
+                    kv_page_indptr[batch_indices.long()].long() + logical_page
+                ].long()
+                k_cache[physical_page, :, slot, :] = key
+                v_cache[physical_page, :, slot, :] = value
+            else:
+                page.append_paged_kv_cache(  # type: ignore
+                    key,
+                    value,
+                    batch_indices,
+                    positions,
+                    (k_cache, v_cache),
+                    kv_page_indices,
+                    kv_page_indptr,
+                    kv_last_page_len,
+                    "HND",
+                )
 
     def _prepare_warmup_cache_indices(
         self, num_tokens: int, device: torch.device

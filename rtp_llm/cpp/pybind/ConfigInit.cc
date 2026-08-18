@@ -1609,6 +1609,9 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("head_num", &AttentionConfigs::head_num)
         .def_readwrite("kv_head_num", &AttentionConfigs::kv_head_num)
         .def_readwrite("size_per_head", &AttentionConfigs::size_per_head)
+        .def_readwrite("v_size_per_head", &AttentionConfigs::v_size_per_head)
+        .def_readwrite("sliding_window", &AttentionConfigs::sliding_window)
+        .def_readwrite("add_sink_bias", &AttentionConfigs::add_sink_bias)
         .def_readwrite("rope_config", &AttentionConfigs::rope_config)
         .def_readwrite("tokens_per_block", &AttentionConfigs::tokens_per_block)
         .def_readwrite("kernel_tokens_per_block", &AttentionConfigs::kernel_tokens_per_block)
@@ -1796,6 +1799,9 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("cache_type", &KVCacheSpecDesc::cache_type)
         .def_readwrite("dtype", &KVCacheSpecDesc::dtype)
         .def_readwrite("is_state_cache", &KVCacheSpecDesc::is_state_cache)
+        .def_readwrite("mha_kv_head_num", &KVCacheSpecDesc::mha_kv_head_num)
+        .def_readwrite("mha_k_head_dim", &KVCacheSpecDesc::mha_k_head_dim)
+        .def_readwrite("mha_v_head_dim", &KVCacheSpecDesc::mha_v_head_dim)
         .def_readwrite("entry_elems", &KVCacheSpecDesc::entry_elems)
         .def_readwrite("entry_dtype", &KVCacheSpecDesc::entry_dtype)
         .def_readwrite("entry_count_mode", &KVCacheSpecDesc::entry_count_mode)
@@ -1818,6 +1824,9 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.cache_type,
                                       self.dtype,
                                       self.is_state_cache,
+                                      self.mha_kv_head_num,
+                                      self.mha_k_head_dim,
+                                      self.mha_v_head_dim,
                                       self.entry_elems,
                                       self.entry_dtype,
                                       self.entry_count_mode,
@@ -1837,28 +1846,31 @@ PYBIND11_MODULE(libth_transformer_config, m) {
             },
             [](py::tuple t) {
                 KVCacheSpecDesc c;
-                if (t.size() != 20)
+                if (t.size() != 23)
                     throw std::runtime_error("Invalid KVCacheSpecDesc state!");
                 c.tag                                  = t[0].cast<std::string>();
                 c.cache_type                           = t[1].cast<KVCacheSpecType>();
                 c.dtype                                = t[2].cast<DataType>();
                 c.is_state_cache                       = t[3].cast<bool>();
-                c.entry_elems                          = t[4].cast<uint32_t>();
-                c.entry_dtype                          = t[5].cast<DataType>();
-                c.entry_count_mode                     = t[6].cast<OpaqueBlockEntryCountMode>();
-                c.explicit_entry_count                 = t[7].cast<uint32_t>();
-                c.compression_ratio                    = t[8].cast<uint32_t>();
-                c.state_ring_overlap                   = t[9].cast<uint32_t>();
-                c.state_ring_include_gen_num_per_cycle = t[10].cast<bool>();
-                c.block_stride_bytes_override          = t[11].cast<size_t>();
-                c.block_stride_bytes_alignment         = t[12].cast<size_t>();
-                c.block_stride_alignment_min_entries   = t[13].cast<uint32_t>();
-                c.group_type                           = t[14].cast<std::optional<CacheGroupType>>();
-                c.reuse                                = t[15].cast<std::optional<CacheReusePolicyDesc>>();
-                c.capacity                             = t[16].cast<std::optional<CacheCapacityPolicyDesc>>();
-                c.memory                               = t[17].cast<std::optional<CacheMemoryPolicyDesc>>();
-                c.tail                                 = t[18].cast<std::optional<CacheTailPolicyDesc>>();
-                c.cp                                   = t[19].cast<std::optional<CacheCpPolicyDesc>>();
+                c.mha_kv_head_num                      = t[4].cast<uint32_t>();
+                c.mha_k_head_dim                       = t[5].cast<uint32_t>();
+                c.mha_v_head_dim                       = t[6].cast<uint32_t>();
+                c.entry_elems                          = t[7].cast<uint32_t>();
+                c.entry_dtype                          = t[8].cast<DataType>();
+                c.entry_count_mode                     = t[9].cast<OpaqueBlockEntryCountMode>();
+                c.explicit_entry_count                 = t[10].cast<uint32_t>();
+                c.compression_ratio                    = t[11].cast<uint32_t>();
+                c.state_ring_overlap                   = t[12].cast<uint32_t>();
+                c.state_ring_include_gen_num_per_cycle = t[13].cast<bool>();
+                c.block_stride_bytes_override          = t[14].cast<size_t>();
+                c.block_stride_bytes_alignment         = t[15].cast<size_t>();
+                c.block_stride_alignment_min_entries   = t[16].cast<uint32_t>();
+                c.group_type                           = t[17].cast<std::optional<CacheGroupType>>();
+                c.reuse                                = t[18].cast<std::optional<CacheReusePolicyDesc>>();
+                c.capacity                             = t[19].cast<std::optional<CacheCapacityPolicyDesc>>();
+                c.memory                               = t[20].cast<std::optional<CacheMemoryPolicyDesc>>();
+                c.tail                                 = t[21].cast<std::optional<CacheTailPolicyDesc>>();
+                c.cp                                   = t[22].cast<std::optional<CacheCpPolicyDesc>>();
                 return c;
             }));
 

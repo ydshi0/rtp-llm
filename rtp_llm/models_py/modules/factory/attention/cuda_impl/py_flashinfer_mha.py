@@ -149,10 +149,12 @@ class PyFlashinferPrefillPagedAttnOp(object):
         backend: str = "auto",
     ) -> None:
         self.g_workspace_buffer = get_py_flashinfer_workspace_buffer()
+        self.attn_configs = attn_configs
+        self.sink_bias = None
         self.local_head_num = attn_configs.head_num
         self.local_kv_head_num = attn_configs.kv_head_num
         self.head_dim_qk = attn_configs.size_per_head
-        self.head_dim_vo = attn_configs.size_per_head
+        self.head_dim_vo = attn_configs.v_size_per_head or attn_configs.size_per_head
         self.page_size = attn_configs.kernel_tokens_per_block
         self.dtype = attn_configs.dtype
         self.kv_dtype = attn_kv_dtype(attn_configs)
@@ -292,12 +294,26 @@ class PyFlashinferPrefillPagedAttnOp(object):
             q_data_type=self.q_dtype,
             kv_data_type=self.kv_dtype,
             o_data_type=self.dtype,
+            head_dim_vo=self.head_dim_vo,
+            window_left=(
+                self.attn_configs.sliding_window
+                if self.attn_configs.sliding_window > 0
+                else -1
+            ),
         )
         return self.fmha_params
 
     @staticmethod
     def support(attn_inputs: PyAttentionInputs) -> bool:
         return True
+
+    def set_sink_bias(self, bias):
+        self.sink_bias = bias
+
+    def _get_paged_kv_cache(self, kv_cache: LayerKVCache):
+        if self.head_dim_vo != self.head_dim_qk and kv_cache.k_cache.numel() > 0:
+            return (kv_cache.k_cache, kv_cache.v_cache)
+        return kv_cache.kv_cache_base
 
     def forward(
         self, q: torch.Tensor, kv_cache: Optional[LayerKVCache]
@@ -323,7 +339,7 @@ class PyFlashinferPrefillPagedAttnOp(object):
             q.dim() == 3
         ), f"Expected q to be 3D tensor [total_tokens, num_heads, head_dim], got {q.dim()}D"
 
-        paged_kv_cache = kv_cache.kv_cache_base
+        paged_kv_cache = self._get_paged_kv_cache(kv_cache)
         if paged_kv_cache.dim() == 2:
             paged_kv_cache = common.reshape_paged_kv_cache(
                 paged_kv_cache, self.local_kv_head_num, self.page_size, self.head_dim_qk
@@ -399,7 +415,9 @@ class PyFlashinferPrefillPagedAttnOp(object):
                 q_aligned = self._aligned_q_cast_buf
 
             # Paged FP8 defaults to unit scales and the output dtype from plan().
-            result = self.prefill_wrapper.run(q_aligned, paged_kv_cache)
+            result = self.prefill_wrapper.run(
+                q_aligned, paged_kv_cache, sinks=self.sink_bias
+            )
 
             # Reshape result to 2D for copy back (ensure contiguous)
             result_2d = result.view(total_len, hidden_size).contiguous()
@@ -423,7 +441,9 @@ class PyFlashinferPrefillPagedAttnOp(object):
             # No CUDA graph copy, direct execution
             # Paged FP8 defaults to unit scales and the output dtype from plan().
             result = self.prefill_wrapper.run(
-                quantize_to_fp8_if_needed(q, self.q_dtype), paged_kv_cache
+                quantize_to_fp8_if_needed(q, self.q_dtype),
+                paged_kv_cache,
+                sinks=self.sink_bias,
             )
 
         return result
@@ -442,7 +462,7 @@ class PyFlashinferPrefillAttnOp(object):
         self.head_dim_qk = attn_configs.size_per_head
         self.page_size = attn_configs.kernel_tokens_per_block
         # TODO: maybe use v_head_dim
-        self.head_dim_vo = attn_configs.size_per_head
+        self.head_dim_vo = attn_configs.v_size_per_head or attn_configs.size_per_head
         self.prefill_wrapper = BatchPrefillWithRaggedKVCacheWrapper(
             self.g_workspace_buffer,
             backend=backend,
@@ -452,6 +472,7 @@ class PyFlashinferPrefillAttnOp(object):
         self.kv_dtype = attn_kv_dtype(attn_configs)
         self.is_causal = attn_configs.is_causal
         self.fmha_params = rtp_llm_ops.FlashInferMlaAttnParams()
+        self.sink_bias = None
 
     def __del__(self):
         release_py_flashinfer_workspace_buffer(self.g_workspace_buffer)
@@ -459,6 +480,9 @@ class PyFlashinferPrefillAttnOp(object):
     def set_params(self, params: rtp_llm_ops.FlashInferMlaAttnParams):
         """Set the params object to be used by this op."""
         self.fmha_params = params
+
+    def set_sink_bias(self, bias):
+        self.sink_bias = bias
 
     def prepare(self, attn_inputs: PyAttentionInputs) -> ParamsBase:
         """
@@ -514,6 +538,8 @@ class PyFlashinferPrefillAttnOp(object):
         v: torch.Tensor,
         kv_cache: Optional[LayerKVCache] = None,
     ) -> torch.Tensor:
+        # NOTE: BatchPrefillWithRaggedKVCacheWrapper.run() has no `sinks` parameter
+        # in flashinfer 0.6.9, so attention sinks are unsupported on the ragged path.
         q = quantize_to_fp8_if_needed(q, self.q_dtype)
         k = quantize_to_fp8_if_needed(k, self.kv_dtype)
         v = quantize_to_fp8_if_needed(v, self.kv_dtype)
@@ -743,6 +769,9 @@ class PyFlashinferPrefillImplBase(FMHAImplBase):
     def prepare_cuda_graph(self, attn_inputs: PyAttentionInputs):
         self.fmha_impl.prepare(attn_inputs, forbid_realloc=True)
 
+    def set_sink_bias(self, bias):
+        self.fmha_impl.set_sink_bias(bias)
+
     def create_params(self, attn_inputs: PyAttentionInputs):
         """Create FlashInfer MLA attention parameters.
 
@@ -783,12 +812,13 @@ class PyFlashinferPrefillImplBase(FMHAImplBase):
         num_heads = self.attn_configs.head_num
         num_kv_heads = self.attn_configs.kv_head_num
         head_dim = self.attn_configs.size_per_head
+        v_head_dim = self.attn_configs.v_size_per_head or head_dim
 
         q, k, v = torch.split(
             qkv,
             [
                 head_dim * num_heads,
-                head_dim * num_kv_heads,
+                v_head_dim * num_kv_heads,
                 head_dim * num_kv_heads,
             ],
             dim=-1,
@@ -796,7 +826,7 @@ class PyFlashinferPrefillImplBase(FMHAImplBase):
 
         query = q.reshape(q.shape[0], num_heads, head_dim)
         key = k.reshape(k.shape[0], num_kv_heads, head_dim)
-        value = v.reshape(v.shape[0], num_kv_heads, head_dim)
+        value = v.reshape(v.shape[0], num_kv_heads, v_head_dim)
 
         return query, key, value
 
@@ -1009,11 +1039,13 @@ class PyFlashinferDecodeAttnOp(object):
         attn_inputs: PyAttentionInputs,
     ) -> None:
         self.g_workspace_buffer = get_py_flashinfer_workspace_buffer()
+        self.attn_configs = attn_configs
+        self.sink_bias = None
         # attn_configs already has head_num and kv_head_num divided by tp_size
         self.local_head_num = attn_configs.head_num
         self.local_kv_head_num = attn_configs.kv_head_num
         self.head_dim_qk = attn_configs.size_per_head
-        self.head_dim_vo = attn_configs.size_per_head
+        self.head_dim_vo = attn_configs.v_size_per_head or attn_configs.size_per_head
         self.seq_size_per_block = attn_configs.kernel_tokens_per_block
         self.use_tensor_core = determine_use_tensor_core_from_configs(attn_configs)
         self.decode_wrapper = BatchDecodeWithPagedKVCacheWrapper(
@@ -1065,6 +1097,14 @@ class PyFlashinferDecodeAttnOp(object):
             q_data_type=self.q_dtype,
             kv_data_type=self.kv_dtype,
             o_data_type=self.dtype,
+            # NOTE: BatchDecodeWithPagedKVCacheWrapper.plan() takes only `head_dim`
+            # (passed positionally above as head_dim_qk) in flashinfer 0.6.9 — it has
+            # no `head_dim_vo`, so a differing V head dim cannot be planned here.
+            window_left=(
+                self.attn_configs.sliding_window
+                if self.attn_configs.sliding_window > 0
+                else -1
+            ),
             **plan_kwargs,
         )
 
@@ -1172,6 +1212,9 @@ class PyFlashinferDecodeAttnOp(object):
     def support(self, attn_inputs: PyAttentionInputs) -> bool:
         return True
 
+    def set_sink_bias(self, bias):
+        self.sink_bias = bias
+
     def forward(
         self, q: torch.Tensor, kv_cache: Optional[LayerKVCache], params: ParamsBase
     ) -> torch.Tensor:
@@ -1180,7 +1223,11 @@ class PyFlashinferDecodeAttnOp(object):
             q.reshape(q.shape[0], self.local_head_num, self.head_dim_qk),
             self.q_dtype,
         )
-        paged_kv_cache = kv_cache.kv_cache_base
+        paged_kv_cache = (
+            (kv_cache.k_cache, kv_cache.v_cache)
+            if self.head_dim_vo != self.head_dim_qk and kv_cache.k_cache.numel() > 0
+            else kv_cache.kv_cache_base
+        )
         if paged_kv_cache is not None and paged_kv_cache.dim() == 2:
             paged_kv_cache = common.reshape_paged_kv_cache(
                 paged_kv_cache,
@@ -1189,7 +1236,7 @@ class PyFlashinferDecodeAttnOp(object):
                 self.head_dim_qk,
             )
         # Decode FP8 defaults to unit scales and the output dtype from plan().
-        return self.decode_wrapper.run(q, paged_kv_cache)
+        return self.decode_wrapper.run(q, paged_kv_cache, sinks=self.sink_bias)
 
 
 class PyFlashinferDecodeImpl(FMHAImplBase):
@@ -1225,6 +1272,9 @@ class PyFlashinferDecodeImpl(FMHAImplBase):
 
     def support_cuda_graph(self) -> bool:
         return True
+
+    def set_sink_bias(self, bias):
+        self.fmha_impl.set_sink_bias(bias)
 
     @classmethod
     def support(

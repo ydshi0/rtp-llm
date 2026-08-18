@@ -74,6 +74,7 @@ class ModelConfig(CppModelConfig):
         "phy2log_path",
         "lora_infos",
         "headwise_config",
+        "mimo_v25_config",
     }
 
     # Known C++ ModelConfig members (from ModelConfig.h)

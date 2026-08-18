@@ -59,6 +59,11 @@ struct KVCacheSpecDesc {
     DataType        dtype          = DataType::TYPE_INVALID;
     bool            is_state_cache = false;
 
+    // MHA-only per-layer shape overrides. Zero falls back to AttentionConfigs.
+    uint32_t mha_kv_head_num = 0;
+    uint32_t mha_k_head_dim  = 0;
+    uint32_t mha_v_head_dim  = 0;
+
     uint32_t entry_elems = 0;
     DataType entry_dtype = DataType::TYPE_INVALID;
 

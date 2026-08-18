@@ -29,6 +29,8 @@ namespace torch_ext {
 struct LayerKVCache {
     torch::Tensor kv_cache_base;
     torch::Tensor kv_scale_base;
+    torch::Tensor k_cache;
+    torch::Tensor v_cache;
     int           seq_size_per_block = 0;
     int           layer_id           = -1;
     int           group_id           = -1;
@@ -165,8 +167,7 @@ private:
                             buffers.kv_scale_addr);
 
         const auto spec_type = group.spec->type;
-        if (group.policy.group_type != rtp_llm::CacheGroupType::FULL
-            || spec_type == rtp_llm::KVCacheSpecType::LinearAttention
+        if (spec_type == rtp_llm::KVCacheSpecType::LinearAttention
             || spec_type == rtp_llm::KVCacheSpecType::OpaqueState) {
             return result;
         }
@@ -182,6 +183,7 @@ private:
             RTP_LLM_CHECK_WITH_INFO(local_kv_heads > 0, "MHA tag=%s has no local KV heads", group.tag.c_str());
             const int64_t physical_seq_size = static_cast<int64_t>(group.seq_size_per_block);
             const int64_t k_block_elems     = static_cast<int64_t>(group.spec->k_block_size());
+            const int64_t v_block_elems     = static_cast<int64_t>(group.spec->v_block_size());
             RTP_LLM_CHECK_WITH_INFO(k_block_elems > 0 && k_block_elems % (local_kv_heads * physical_seq_size) == 0,
                                     "MHA tag=%s cannot derive head dimension from k_block_size=%ld heads=%ld seq=%ld",
                                     group.tag.c_str(),
@@ -189,17 +191,36 @@ private:
                                     local_kv_heads,
                                     physical_seq_size);
             const int64_t head_dim = k_block_elems / (local_kv_heads * physical_seq_size);
+            RTP_LLM_CHECK_WITH_INFO(v_block_elems > 0
+                                        && v_block_elems % (local_kv_heads * physical_seq_size) == 0,
+                                    "MHA tag=%s cannot derive V head dimension from v_block_size=%ld heads=%ld seq=%ld",
+                                    group.tag.c_str(),
+                                    v_block_elems,
+                                    local_kv_heads,
+                                    physical_seq_size);
+            const int64_t v_head_dim = v_block_elems / (local_kv_heads * physical_seq_size);
             RTP_LLM_CHECK_WITH_INFO(
                 buffers.kv_addr.is_contiguous(), "MHA KV cache base for tag=%s must be contiguous", group.tag.c_str());
-            const int64_t expected_numel = kernel_block_num * 2 * local_kv_heads * kernel_seq_size * head_dim;
+            const int64_t expected_numel =
+                kernel_block_num * local_kv_heads * kernel_seq_size * (head_dim + v_head_dim);
             RTP_LLM_CHECK_WITH_INFO(buffers.kv_addr.numel() == expected_numel,
                                     "MHA KV cache elements=%ld expected=%ld for layer=%d tag=%s",
                                     buffers.kv_addr.numel(),
                                     expected_numel,
                                     layer_id,
                                     group.tag.c_str());
-            result.kv_cache_base =
-                buffers.kv_addr.view({kernel_block_num, 2, local_kv_heads, kernel_seq_size, head_dim});
+            if (head_dim == v_head_dim) {
+                result.kv_cache_base =
+                    buffers.kv_addr.view({kernel_block_num, 2, local_kv_heads, kernel_seq_size, head_dim});
+            } else {
+                auto physical = buffers.kv_addr.view({physical_block_num, -1});
+                const int64_t k_physical_elems = local_kv_heads * physical_seq_size * head_dim;
+                const int64_t v_physical_elems = local_kv_heads * physical_seq_size * v_head_dim;
+                result.k_cache = physical.narrow(1, 0, k_physical_elems)
+                                     .view({kernel_block_num, local_kv_heads, kernel_seq_size, head_dim});
+                result.v_cache = physical.narrow(1, k_physical_elems, v_physical_elems)
+                                     .view({kernel_block_num, local_kv_heads, kernel_seq_size, v_head_dim});
+            }
             if (buffers.kv_scale_addr.defined()) {
                 RTP_LLM_CHECK_WITH_INFO(buffers.kv_scale_addr.is_contiguous() && buffers.kv_scale_addr.dim() > 0
                                             && buffers.kv_scale_addr.size(0) == physical_block_num

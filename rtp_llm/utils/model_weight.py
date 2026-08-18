@@ -464,6 +464,30 @@ def get_sp_tensor(
     return torch.concat([qs, ks, vs], dim=1).contiguous()
 
 
+def get_sp_tensor_kv_asym(
+    t: torch.Tensor,
+    head_num: int,
+    head_num_kv: int,
+    size_per_head: int,
+    v_size_per_head: int,
+    tp: int,
+    tp_rank: int,
+    **kwargs: Any,
+) -> torch.Tensor:
+    """Split fused QKV when the K and V head dimensions differ."""
+    q_hidden = head_num * size_per_head
+    k_hidden = head_num_kv * size_per_head
+    v_hidden = head_num_kv * v_size_per_head
+    t = t.reshape([-1, q_hidden + k_hidden + v_hidden])
+    qs = sp_neg1(t[:, :q_hidden], tp, tp_rank)
+
+    kv_tp = math.gcd(head_num_kv, tp)
+    kv_rank = tp_rank // (tp // kv_tp)
+    ks = sp_neg1(t[:, q_hidden : q_hidden + k_hidden], kv_tp, kv_rank)
+    vs = sp_neg1(t[:, q_hidden + k_hidden :], kv_tp, kv_rank)
+    return torch.concat([qs, ks, vs], dim=1).contiguous()
+
+
 # MHA layout: [D, head*size_per_head, head*size_per_head, head*size_per_head] == [D, 3, D] (sp_neg)
 # MQA layout: [D, head*size_per_head, kv_head*size_per_head, kv_head*size_per_head] (sp_head)
 def sp_head(
@@ -1181,6 +1205,7 @@ class W:
     pre_attn_ln_beta = "pre_attn_layernorm_weights.beta"
     attn_qkv_w = "self_attention_weights.query_weight.kernel"
     attn_qkv_b = "self_attention_weights.query_weight.bias"
+    attn_sink_bias = "self_attention_weights.sink_bias"
     attn_ln_gamma = "self_attention_weights.attention_layernorm.gamma"
     attn_ln_beta = "self_attention_weights.attention_layernorm.beta"
     qk_ln_gamma = "self_attention_weights.qk_layernorm.gamma"
@@ -1425,6 +1450,7 @@ class W:
         attn_qkv_z: sp_head_z,
         attn_qkv_s: sp_head_s,
         attn_qkv_b: sp_head_b,
+        attn_sink_bias: sp_id,
         attn_o_w: sp_0,
         attn_o_z: sp_0,
         attn_o_s: sp_0,
@@ -1563,6 +1589,11 @@ class CkptWeightInfo:
 
     def __repr__(self) -> str:
         return self.__str__()
+
+
+def is_mimo_v25_weight(src_weight_info: Any) -> bool:
+    """Return whether a weight requires MiMo-specific quant dispatch."""
+    return bool(getattr(src_weight_info, "is_mimo_v25", False))
 
 
 class WeightStyle(Enum):

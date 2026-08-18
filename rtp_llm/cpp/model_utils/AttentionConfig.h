@@ -24,6 +24,11 @@ struct AttentionConfigs {
     size_t head_num;
     size_t kv_head_num;
     size_t size_per_head;
+    // Optional value width for asymmetric K/V attention. Zero means size_per_head.
+    size_t v_size_per_head = 0;
+    // Per-attention-instance capabilities used by MiMo GA/SWA routing.
+    size_t sliding_window = 0;
+    bool   add_sink_bias  = false;
 
     // rotary embending config
     RopeConfig rope_config;
